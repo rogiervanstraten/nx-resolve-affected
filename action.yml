@@ -1,8 +1,7 @@
 name: 'Resolve affected apps'
-description: >
-  On push: queries the GitHub Deployments API per app to find the last
-  successful deployment SHA, then runs nx affected to build a deploy matrix. On
-  workflow_dispatch: resolves the explicit app list instead.
+description:
+  'Builds an NX deploy matrix with a per-app base SHA from GitHub Deployments,
+  so apps redeploy only when they changed.'
 author: Rogier van Straten <rogier@from89.com>
 branding:
   icon: git-branch
