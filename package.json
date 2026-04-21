@@ -1,23 +1,24 @@
 {
-  "name": "terraform-affected-projects",
-  "description": "GitHub Action to detect affected Terraform projects in monorepos based on module dependencies",
+  "name": "nx-resolve-affected",
+  "description": "GitHub Action that resolves the NX affected deploy matrix per app using GitHub Deployments as the base SHA source",
   "version": "1.0.0",
   "author": "Rogier van Straten <rogier@from89.com>",
   "type": "module",
   "private": true,
-  "homepage": "https://github.com/rogiervanstraten/terraform-affected-projects",
+  "homepage": "https://github.com/rogiervanstraten/nx-resolve-affected",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/rogiervanstraten/terraform-affected-projects.git"
+    "url": "git+https://github.com/rogiervanstraten/nx-resolve-affected.git"
   },
   "bugs": {
-    "url": "https://github.com/rogiervanstraten/terraform-affected-projects/issues"
+    "url": "https://github.com/rogiervanstraten/nx-resolve-affected/issues"
   },
   "keywords": [
     "actions",
-    "terraform",
-    "changed-files",
-    "monorepo"
+    "nx",
+    "affected",
+    "monorepo",
+    "deployments"
   ],
   "exports": {
     ".": "./dist/index.js"
@@ -42,7 +43,7 @@
   "license": "MIT",
   "dependencies": {
     "@actions/core": "^3.0.0",
-    "minimatch": "^10.2.4"
+    "@actions/github": "^7.0.0"
   },
   "devDependencies": {
     "@eslint/compat": "^2.0.5",

@@ -1,185 +1,97 @@
-# Terraform Affected Projects
+# nx-resolve-affected
 
-GitHub Action to detect affected Terraform projects in monorepos by analyzing
-module dependencies and changed files.
+GitHub Action that builds an NX deploy matrix for an apps monorepo.
 
-## Features
-
-- **Path-aware dependency resolution** - Correctly resolves Terraform module
-  references across complex directory structures
-- **Multiple monorepo patterns** - Supports various organizational patterns
-  (shared modules, multi-environment, multi-domain, multi-account)
-- **Git-based or manual file input** - Auto-detect changes via Git diff or
-  provide files manually
-- **Full project discovery mode** - Return all Terraform project roots on demand
-- **Glob pattern filtering** - Include/exclude files using glob patterns
-- **Security-hardened** - No shell injection vulnerabilities, input sanitization
-
-## How Projects Are Identified
-
-> **This is the most important concept to understand before using this action.**
-
-A directory is treated as a **Terraform project root** when it contains the file
-specified by `project-marker` (default: `provider.tf`). This file is what the
-action uses to discover all deployable projects in your repository —
-particularly when using `resolve-root: true`.
-
-If your monorepo uses a different convention, set `project-marker` accordingly:
-
-| Convention                                   | `project-marker` value |
-| -------------------------------------------- | ---------------------- |
-| Provider declared in `provider.tf` (default) | `provider.tf`          |
-| Provider + versions in `versions.tf`         | `versions.tf`          |
-| Everything in one file                       | `main.tf`              |
-| Backend config as the marker                 | `backend.tf`           |
-
-**Example:** if your projects look like this:
-
-```
-services/api/prod/
-  backend.tf    ← marker file
-  main.tf
-  variables.tf
-```
-
-Set `project-marker: backend.tf` so the action knows `services/api/prod/` is a
-project root.
+- **On `push`**: for each app, queries the GitHub Deployments API to find the
+  last successful deployment SHA for that app's environment, then runs
+  `nx show projects --affected` against that SHA to decide whether the app needs
+  redeploying. Each app gets its **own** base SHA.
+- **On `workflow_dispatch`**: skips affected resolution and returns the explicit
+  list of apps passed in, tagged with the caller-supplied environment.
 
 ## Usage
 
 ```yaml
-- name: Detect affected Terraform projects
-  uses: rogiervanstraten/terraform-affected-projects@v1
+- name: Resolve affected apps
+  id: resolve
+  uses: rogiervanstraten/nx-resolve-affected@v1
   with:
-    # IMPORTANT: The file that marks a directory as a Terraform project root.
-    # Defaults to 'provider.tf'. Change if your projects use a different
-    # convention (e.g. 'versions.tf', 'main.tf', 'backend.tf').
-    project-marker: provider.tf
+    github-token: ${{ secrets.GITHUB_TOKEN }}
+    event-name: ${{ github.event_name }}
+    ref-name: ${{ github.ref_name }}
+    # workflow_dispatch only:
+    environment: ${{ inputs.environment }}
+    apps: ${{ inputs.apps }}
+    # optional:
+    exclude: some-app,another-app
 
-    # Optional: Provide changed files manually (if not provided, auto-detected via git)
-    changed-files: |
-      modules/vpc/main.tf
-      services/api/production/main.tf
-
-    # Optional: Git references for diff (auto-detected for pull_request and push events)
-    base-ref: 'main'
-    head-ref: 'HEAD'
-
-    # Optional: Include only specific file patterns
-    files: |
-      **/*.tf
-      **/*.tfvars
-
-    # Optional: Exclude file patterns
-    files-ignore: |
-      **/*.md
-      .github/**
-
-    # Optional: Return all projects if root directory changes
-    resolve-root: false
-
-    # Optional: Return all projects regardless of changed files.
-    # Takes precedence over `resolve-root` when enabled.
-    all-projects: false
-
-    # Optional: Paths to ignore
-    ignore-paths: |
-      .
-      .git
-      node_modules
+- name: Deploy
+  if: steps.resolve.outputs.has-apps == 'true'
+  strategy:
+    matrix:
+      include: ${{ fromJson(steps.resolve.outputs.matrix) }}
+  run:
+    echo "Deploying ${{ matrix.app }} to ${{ matrix.environment }} from ${{
+    matrix.base_sha }}"
 ```
+
+## Inputs
+
+| Input          | Required | Description                                                                          |
+| -------------- | -------- | ------------------------------------------------------------------------------------ |
+| `github-token` | yes      | Token with `deployments:read` and `contents:read` permissions                        |
+| `event-name`   | yes      | `github.event_name` — drives the push vs workflow_dispatch branch                    |
+| `ref-name`     | yes      | `github.ref_name` — on push, `main` maps to `staging`, anything else to `production` |
+| `environment`  | no       | Explicit environment for `workflow_dispatch` (e.g. `staging`, `production`)          |
+| `apps`         | no       | Comma-separated app short names for `workflow_dispatch`                              |
+| `exclude`      | no       | Comma-separated NX project names to exclude from affected resolution                 |
 
 ## Outputs
 
-- `changed-directories` - JSON array of affected Terraform project directories
+| Output        | Description                                                |
+| ------------- | ---------------------------------------------------------- |
+| `matrix`      | JSON array of `{ app, environment, base_sha }` objects     |
+| `has-apps`    | `'true'` when the matrix is non-empty, `'false'` otherwise |
+| `environment` | Resolved environment name (`staging` \| `production`)      |
 
-### Example
+### Matrix shape
 
-```yaml
-- name: Detect affected projects
-  id: affected
-  uses: rogiervanstraten/terraform-affected-projects@v1
-
-- name: Show affected projects
-  run: echo "Affected projects: ${{ steps.affected.outputs.changed-directories }}"
+```json
+[
+  { "app": "@acme/web", "environment": "staging", "base_sha": "abc123" },
+  { "app": "@acme/api", "environment": "staging", "base_sha": "def456" }
+]
 ```
 
-## Why This Action?
+On `workflow_dispatch`, `base_sha` is an empty string — callers are expected to
+deploy the current `HEAD` unconditionally in that flow.
 
-In Terraform monorepos, a change to a shared module can affect multiple
-projects. Without dependency tracking, you'd either:
+## How the base SHA is chosen (per app)
 
-- **Re-run everything** (slow, wasteful CI/CD)
-- **Manual tracking** (error-prone, hard to maintain)
-- **Miss dependencies** (deploy broken infrastructure)
+For each app the action looks up the most recent deployment in the
+`<environment>/<short-name>` GitHub Deployments environment and uses the SHA of
+the last one whose `latestStatus.state == SUCCESS`. If no successful deployment
+exists, it falls back to the repo's initial commit so the app is always
+considered affected on its first deploy.
 
-This action solves this by automatically detecting which Terraform projects are
-affected by your changes through module dependency analysis.
+An app is included in the matrix only if `nx show projects --affected` against
+that base SHA reports it as affected.
 
-### Example Scenarios
+## Requirements
 
-**Scenario 1: Shared Module Change**
-
-```
-modules/database/
-  main.tf          # ← Changed
-service-a/production/
-  main.tf          # References modules/database
-service-b/production/
-  main.tf          # No dependency
-```
-
-**Result**: Only `service-a/production` is affected and needs to run
-`terraform plan/apply`
-
-**Scenario 2: Multi-Environment Projects**
-
-```
-services/api-gateway/
-  module/
-    main.tf        # ← Changed
-  dev/
-    main.tf        # References ../module
-  staging/
-    main.tf        # References ../module
-  prod/
-    main.tf        # References ../module
-```
-
-**Result**: All environments (`dev`, `staging`, `prod`) are affected
-
-**Scenario 3: Nested Dependencies**
-
-```
-modules/vpc/
-  main.tf          # ← Changed
-modules/eks-cluster/
-  main.tf          # References ../vpc
-services/platform/prod/
-  main.tf          # References ../../modules/eks-cluster
-```
-
-**Result**: `services/platform/prod` is affected (transitive dependency
-resolution)
-
-## Supported Monorepo Patterns
-
-Works with various Terraform monorepo structures:
-
-- **Shared modules**: `modules/` or `_modules/` with project references
-- **Multi-environment**: `service-X/{dev,staging,prod}`
-- **Multi-domain**: Nested organizational structures (`domain-A/subdomain-I/`)
-- **Multi-account**: Flat account-based layouts (`account-production/`,
-  `account-staging/`)
-- **Project modules**: Service-specific `*/module` directories with environment
-  deployments
+- NX monorepo with app projects under `apps/` and a `project.json` per app whose
+  `name` is the full NX project name (e.g. `@acme/web`).
+- `pnpm` and `nx` available on the runner.
+- Deployment environments named `<environment>/<short-app-name>` (e.g.
+  `staging/web`) — this is how the action correlates apps to their deployment
+  history.
 
 ## Development
 
 ```bash
 npm install
-npm run all    # Format, lint, test, and build
-npm test       # Run tests with Vitest
+npm run all    # format, lint, test, bundle
+npm test
 ```
 
 ## License

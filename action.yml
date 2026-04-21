@@ -1,86 +1,46 @@
-name: terraform-affected-projects
-description:
-  Detects affected Terraform projects in monorepos by analyzing module
-  dependencies and changed files
+name: 'Resolve affected apps'
+description: >
+  On push: queries the GitHub Deployments API per app to find the last
+  successful deployment SHA, then runs nx affected to build a deploy matrix. On
+  workflow_dispatch: resolves the explicit app list instead.
 author: Rogier van Straten <rogier@from89.com>
-
-# Add your action's branding here. This will appear on the GitHub Marketplace.
 branding:
   icon: git-branch
   color: purple
 
-# Define your inputs here.
 inputs:
-  changed-files:
+  github-token:
     description:
-      'Manually provide a list of changed files (optional, will auto-detect via
-      git if not provided)'
+      'GitHub token with deployments:read and contents:read permissions'
+    required: true
+  event-name:
+    description: 'github.event_name'
+    required: true
+  ref-name:
+    description: 'github.ref_name'
+    required: true
+  environment:
+    description:
+      'Explicit environment for workflow_dispatch (staging | production)'
     required: false
     default: ''
-  base-ref:
-    description:
-      'Base git reference for diff (e.g., HEAD^, commit SHA). Used for
-      auto-detection.'
+  apps:
+    description: 'Comma-separated app short names for workflow_dispatch'
     required: false
     default: ''
-  head-ref:
+  exclude:
     description:
-      'Head git reference for diff (e.g., HEAD, commit SHA). Used for
-      auto-detection.'
+      'Comma-separated project names to exclude from affected resolution'
     required: false
     default: ''
-  files:
-    description: |
-      Include only files matching these glob patterns (multiline).
-      Defaults to Terraform files if not specified.
-      Example:
-        files: |
-          **/*.tf
-          **/*.tfvars
-    required: false
-    default: |
-      **/*.tf
-      **/*.tfvars
-  files-ignore:
-    description: |
-      Exclude files matching these glob patterns (multiline).
-      Example:
-        files-ignore: |
-          **/*.md
-          .github/**
-    required: false
-    default: ''
-  resolve-root:
-    description:
-      'Should projects be resolved from changes to files in the root directory?'
-    required: false
-    default: 'false'
-  all-projects:
-    description:
-      'Return all Terraform projects regardless of detected changed files.'
-    required: false
-    default: 'false'
-  project-marker:
-    description: >
-      The filename used to identify a directory as a Terraform project root. Any
-      directory containing this file (outside of module paths) is treated as a
-      deployable project. Defaults to 'provider.tf', which is the conventional
-      file for declaring Terraform providers. Change this if your projects use a
-      different convention (e.g. 'versions.tf' or 'main.tf').
-    required: false
-    default: provider.tf
-  ignore-paths:
-    description: 'A list of paths to ignore'
-    required: false
-    default: |
-      .
-      .git
-      node_modules
 
-# Define your outputs here.
 outputs:
-  changed-directories:
-    description: A list of changed directories
+  matrix:
+    description: 'JSON array of {app, environment, base_sha} objects'
+  has-apps:
+    description: 'true if any apps are in the matrix'
+  environment:
+    description: 'Resolved environment name (staging | production)'
 
 runs:
   using: node24
