@@ -1,126 +1,89 @@
 import * as core from '@actions/core'
 import * as github from '@actions/github'
-import { execSync } from 'child_process'
 import * as path from 'path'
+import { GithubDeploymentsAdapter } from './adapters/github-deployments.adapter.js'
+import { NxCliAdapter } from './adapters/nx-cli.adapter.js'
 import {
+  DeployMatrixService,
   computeEnvironment,
   resolveShortNames,
-  buildPushMatrix,
-  parseInitialCommit,
   type MatrixEntry
-} from './lib.js'
+} from './services/deploy-matrix.service.js'
 
-interface DeploymentQueryResult {
-  repository: {
-    deployments: {
-      nodes: Array<{
-        commitOid: string
-        latestStatus: { state: string } | null
-      }>
-    }
-  }
+interface ActionInputs {
+  eventName: string
+  refName: string
+  environment: string
+  apps: string[]
+  exclude: string[]
+  token: string
 }
 
-async function getLastSuccessfulSha(
-  octokit: ReturnType<typeof github.getOctokit>,
-  owner: string,
-  repo: string,
-  envName: string
-): Promise<string | null> {
-  const result = await octokit.graphql<DeploymentQueryResult>(
-    `
-    query($owner: String!, $name: String!, $env: String!) {
-      repository(owner: $owner, name: $name) {
-        deployments(
-          environments: [$env]
-          first: 10
-          orderBy: { field: CREATED_AT, direction: DESC }
-        ) {
-          nodes {
-            commitOid
-            latestStatus { state }
-          }
-        }
-      }
-    }
-  `,
-    { owner, name: repo, env: envName }
-  )
-
-  const node = result.repository.deployments.nodes.find(
-    (n) => n.latestStatus?.state === 'SUCCESS'
-  )
-
-  return node?.commitOid ?? null
-}
-
-function excludeFlag(exclude: string[]): string {
-  return exclude.length ? ` --exclude=${exclude.join(',')}` : ''
-}
-
-function getAllApps(exclude: string[]): string[] {
-  return JSON.parse(
-    execSync(`pnpm nx show projects --type=app --json${excludeFlag(exclude)}`, {
-      encoding: 'utf8'
-    })
-  )
-}
-
-function getAffectedApps(baseSha: string, exclude: string[]): string[] {
-  return JSON.parse(
-    execSync(
-      `pnpm nx show projects --affected --base=${baseSha} --head=HEAD --type=app --json${excludeFlag(exclude)}`,
-      { encoding: 'utf8' }
-    )
-  )
-}
-
-export async function run(): Promise<void> {
-  const eventName = core.getInput('event-name', { required: true })
-  const refName = core.getInput('ref-name', { required: true })
-  const envInput = core.getInput('environment')
-  const appsInput = core.getInput('apps')
-  const excludeInput = core.getInput('exclude')
-  const token = core.getInput('github-token', { required: true })
-
-  const environment = computeEnvironment(eventName, refName, envInput)
-  const exclude = excludeInput
+export function splitCsv(value: string): string[] {
+  return value
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean)
+}
 
-  let matrix: MatrixEntry[]
-
-  if (eventName === 'workflow_dispatch') {
-    const requested = appsInput
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean)
-    const apps = resolveShortNames(
-      requested,
-      path.join(process.cwd(), 'apps')
-    ).filter((app) => !exclude.includes(app))
-    matrix = apps.map((app) => ({ app, environment, base_sha: '' }))
-  } else {
-    const octokit = github.getOctokit(token)
-    const { owner, repo } = github.context.repo
-    const initialCommit = parseInitialCommit(
-      execSync('git rev-list --max-parents=0 HEAD', { encoding: 'utf8' })
-    )
-
-    matrix = await buildPushMatrix(
-      environment,
-      getAllApps(exclude),
-      initialCommit,
-      (envName) => getLastSuccessfulSha(octokit, owner, repo, envName),
-      (baseSha) => getAffectedApps(baseSha, exclude),
-      (msg) => core.info(msg)
-    )
+function readInputs(): ActionInputs {
+  return {
+    eventName: core.getInput('event-name') || github.context.eventName,
+    refName: core.getInput('ref-name') || process.env.GITHUB_REF_NAME || '',
+    environment: core.getInput('environment'),
+    apps: splitCsv(core.getInput('apps')),
+    exclude: splitCsv(core.getInput('exclude')),
+    token: core.getInput('github-token', { required: true })
   }
+}
 
-  const json = JSON.stringify(matrix)
-  core.info(`Matrix: ${json}`)
-  core.setOutput('matrix', json)
-  core.setOutput('has-apps', matrix.length > 0 ? 'true' : 'false')
-  core.setOutput('environment', environment)
+export function buildDispatchMatrix(
+  environment: string,
+  apps: string[],
+  exclude: string[],
+  appsDir: string = path.join(process.cwd(), 'apps')
+): MatrixEntry[] {
+  const resolved = resolveShortNames(apps, appsDir).filter(
+    (app) => !exclude.includes(app)
+  )
+
+  return resolved.map((app) => ({ app, environment, base_sha: '' }))
+}
+
+async function buildPushMatrix(
+  environment: string,
+  exclude: string[],
+  token: string
+): Promise<MatrixEntry[]> {
+  const octokit = github.getOctokit(token)
+  const { owner, repo } = github.context.repo
+  const service = new DeployMatrixService(
+    new GithubDeploymentsAdapter(octokit, owner, repo),
+    new NxCliAdapter()
+  )
+  return service.buildPushMatrix(environment, exclude, (msg) => core.info(msg))
+}
+
+export async function run(): Promise<void> {
+  try {
+    const inputs = readInputs()
+    const environment = computeEnvironment(
+      inputs.eventName,
+      inputs.refName,
+      inputs.environment
+    )
+
+    const matrix =
+      inputs.eventName === 'workflow_dispatch'
+        ? buildDispatchMatrix(environment, inputs.apps, inputs.exclude)
+        : await buildPushMatrix(environment, inputs.exclude, inputs.token)
+
+    const json = JSON.stringify(matrix)
+    core.info(`Matrix: ${json}`)
+    core.setOutput('matrix', json)
+    core.setOutput('has-apps', matrix.length > 0 ? 'true' : 'false')
+    core.setOutput('environment', environment)
+  } catch (error) {
+    if (error instanceof Error) core.setFailed(error.message)
+  }
 }

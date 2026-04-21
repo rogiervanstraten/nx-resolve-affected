@@ -1,5 +1,5 @@
 {
-  "name": "terraform-affected-projects",
+  "name": "nx-resolve-affected",
   "image": "mcr.microsoft.com/devcontainers/typescript-node:20",
   "postCreateCommand": "npm install",
   "customizations": {

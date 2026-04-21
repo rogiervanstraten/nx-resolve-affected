@@ -14,11 +14,15 @@ inputs:
       'GitHub token with deployments:read and contents:read permissions'
     required: true
   event-name:
-    description: 'github.event_name'
-    required: true
+    description:
+      'Override for github.event_name. Defaults to the runtime context.'
+    required: false
+    default: ''
   ref-name:
-    description: 'github.ref_name'
-    required: true
+    description:
+      'Override for github.ref_name. Defaults to the GITHUB_REF_NAME env var.'
+    required: false
+    default: ''
   environment:
     description:
       'Explicit environment for workflow_dispatch (staging | production)'

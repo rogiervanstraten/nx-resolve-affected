@@ -42349,6 +42349,62 @@ function requireGithub () {
 
 var githubExports = requireGithub();
 
+class GithubDeploymentsAdapter {
+    octokit;
+    owner;
+    repo;
+    constructor(octokit, owner, repo) {
+        this.octokit = octokit;
+        this.owner = owner;
+        this.repo = repo;
+    }
+    async getLastSuccessfulSha(envName) {
+        const result = await this.octokit.graphql(`
+      query($owner: String!, $name: String!, $env: String!) {
+        repository(owner: $owner, name: $name) {
+          deployments(
+            environments: [$env]
+            first: 10
+            orderBy: { field: CREATED_AT, direction: DESC }
+          ) {
+            nodes {
+              commitOid
+              latestStatus { state }
+            }
+          }
+        }
+      }
+    `, { owner: this.owner, name: this.repo, env: envName });
+        const node = result.repository.deployments.nodes.find((n) => n.latestStatus?.state === 'SUCCESS');
+        return node?.commitOid ?? null;
+    }
+}
+
+/**
+ * Extracts the first SHA from the output of `git rev-list --max-parents=0 HEAD`.
+ *
+ * A repo with multiple independent root commits (e.g. created via git subtree
+ * or import) returns one SHA per line. Using the raw multi-line string as a
+ * `--base=` argument breaks the shell command, so we take only the first line.
+ */
+function parseInitialCommit(gitOutput) {
+    return gitOutput.trim().split('\n')[0];
+}
+class NxCliAdapter {
+    excludeFlag(exclude) {
+        return exclude.length ? ` --exclude=${exclude.join(',')}` : '';
+    }
+    getAllApps(exclude) {
+        return JSON.parse(execSync(`pnpm nx show projects --type=app --json${this.excludeFlag(exclude)}`, { encoding: 'utf8' }));
+    }
+    getAffectedApps(baseSha, exclude) {
+        return JSON.parse(execSync(`pnpm nx show projects --affected --base=${baseSha} --head=HEAD --type=app --json${this.excludeFlag(exclude)}`, { encoding: 'utf8' }));
+    }
+    getInitialCommit() {
+        return parseInitialCommit(execSync('git rev-list --max-parents=0 HEAD', { encoding: 'utf8' }));
+    }
+}
+
 /**
  * Derives the target environment from the GitHub event context.
  * On workflow_dispatch the caller supplies it explicitly; on push it is
@@ -42378,111 +42434,89 @@ function resolveShortNames(requested, appsDir) {
     }
     return resolved;
 }
-/**
- * Extracts the first SHA from the output of `git rev-list --max-parents=0 HEAD`.
- *
- * A repo with multiple independent root commits (e.g. created via git subtree
- * or import) returns one SHA per line. Using the raw multi-line string as a
- * `--base=` argument breaks the shell command, so we take only the first line.
- */
-function parseInitialCommit(gitOutput) {
-    return gitOutput.trim().split('\n')[0];
-}
-/**
- * Builds the deploy matrix for a push event.
- *
- * For each app, calls getSha to find the last successful deployment SHA, then
- * calls getAffected to determine which apps changed since that SHA. Only apps
- * that are affected are included in the returned matrix.
- *
- * Accepts injected getSha / getAffected / onInfo to keep the function pure and
- * testable without mocking module-level side effects.
- */
-async function buildPushMatrix(environment, allApps, initialCommit, getSha, getAffected, onInfo) {
-    const matrix = [];
-    for (const app of allApps) {
-        const short = app.replace(/^@[^/]+\//, '');
-        const envName = `${environment}/${short}`;
-        let baseSha = await getSha(envName);
-        if (!baseSha) {
-            onInfo(`No successful deployment for ${envName}, using initial commit`);
-            baseSha = initialCommit;
-        }
-        else {
-            onInfo(`Base SHA for ${envName}: ${baseSha}`);
-        }
-        if (getAffected(baseSha).includes(app)) {
-            matrix.push({ app, environment, base_sha: baseSha });
-        }
+class DeployMatrixService {
+    deployments;
+    nx;
+    constructor(deployments, nx) {
+        this.deployments = deployments;
+        this.nx = nx;
     }
-    return matrix;
+    /**
+     * Builds the deploy matrix for a push event.
+     *
+     * For each app, queries the last successful deployment SHA, then asks NX
+     * whether the app is affected since that SHA. Only affected apps are
+     * included. When no prior deployment exists, falls back to the repo's
+     * initial commit.
+     */
+    async buildPushMatrix(environment, exclude, onInfo) {
+        const allApps = this.nx.getAllApps(exclude);
+        const initialCommit = this.nx.getInitialCommit();
+        const matrix = [];
+        for (const app of allApps) {
+            const short = app.replace(/^@[^/]+\//, '');
+            const envName = `${environment}/${short}`;
+            let baseSha = await this.deployments.getLastSuccessfulSha(envName);
+            if (!baseSha) {
+                onInfo(`No successful deployment for ${envName}, using initial commit`);
+                baseSha = initialCommit;
+            }
+            else {
+                onInfo(`Base SHA for ${envName}: ${baseSha}`);
+            }
+            if (this.nx.getAffectedApps(baseSha, exclude).includes(app)) {
+                matrix.push({ app, environment, base_sha: baseSha });
+            }
+        }
+        return matrix;
+    }
 }
 
-async function getLastSuccessfulSha(octokit, owner, repo, envName) {
-    const result = await octokit.graphql(`
-    query($owner: String!, $name: String!, $env: String!) {
-      repository(owner: $owner, name: $name) {
-        deployments(
-          environments: [$env]
-          first: 10
-          orderBy: { field: CREATED_AT, direction: DESC }
-        ) {
-          nodes {
-            commitOid
-            latestStatus { state }
-          }
-        }
-      }
-    }
-  `, { owner, name: repo, env: envName });
-    const node = result.repository.deployments.nodes.find((n) => n.latestStatus?.state === 'SUCCESS');
-    return node?.commitOid ?? null;
-}
-function excludeFlag(exclude) {
-    return exclude.length ? ` --exclude=${exclude.join(',')}` : '';
-}
-function getAllApps(exclude) {
-    return JSON.parse(execSync(`pnpm nx show projects --type=app --json${excludeFlag(exclude)}`, {
-        encoding: 'utf8'
-    }));
-}
-function getAffectedApps(baseSha, exclude) {
-    return JSON.parse(execSync(`pnpm nx show projects --affected --base=${baseSha} --head=HEAD --type=app --json${excludeFlag(exclude)}`, { encoding: 'utf8' }));
-}
-async function run() {
-    const eventName = getInput('event-name', { required: true });
-    const refName = getInput('ref-name', { required: true });
-    const envInput = getInput('environment');
-    const appsInput = getInput('apps');
-    const excludeInput = getInput('exclude');
-    const token = getInput('github-token', { required: true });
-    const environment = computeEnvironment(eventName, refName, envInput);
-    const exclude = excludeInput
+function splitCsv(value) {
+    return value
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean);
-    let matrix;
-    if (eventName === 'workflow_dispatch') {
-        const requested = appsInput
-            .split(',')
-            .map((s) => s.trim())
-            .filter(Boolean);
-        const apps = resolveShortNames(requested, path.join(process.cwd(), 'apps')).filter((app) => !exclude.includes(app));
-        matrix = apps.map((app) => ({ app, environment, base_sha: '' }));
+}
+function readInputs() {
+    return {
+        eventName: getInput('event-name') || githubExports.context.eventName,
+        refName: getInput('ref-name') || process.env.GITHUB_REF_NAME || '',
+        environment: getInput('environment'),
+        apps: splitCsv(getInput('apps')),
+        exclude: splitCsv(getInput('exclude')),
+        token: getInput('github-token', { required: true })
+    };
+}
+function buildDispatchMatrix(environment, apps, exclude, appsDir = path.join(process.cwd(), 'apps')) {
+    const resolved = resolveShortNames(apps, appsDir).filter((app) => !exclude.includes(app));
+    return resolved.map((app) => ({ app, environment, base_sha: '' }));
+}
+async function buildPushMatrix(environment, exclude, token) {
+    const octokit = githubExports.getOctokit(token);
+    const { owner, repo } = githubExports.context.repo;
+    const service = new DeployMatrixService(new GithubDeploymentsAdapter(octokit, owner, repo), new NxCliAdapter());
+    return service.buildPushMatrix(environment, exclude, (msg) => info(msg));
+}
+async function run() {
+    try {
+        const inputs = readInputs();
+        const environment = computeEnvironment(inputs.eventName, inputs.refName, inputs.environment);
+        const matrix = inputs.eventName === 'workflow_dispatch'
+            ? buildDispatchMatrix(environment, inputs.apps, inputs.exclude)
+            : await buildPushMatrix(environment, inputs.exclude, inputs.token);
+        const json = JSON.stringify(matrix);
+        info(`Matrix: ${json}`);
+        setOutput('matrix', json);
+        setOutput('has-apps', matrix.length > 0 ? 'true' : 'false');
+        setOutput('environment', environment);
     }
-    else {
-        const octokit = githubExports.getOctokit(token);
-        const { owner, repo } = githubExports.context.repo;
-        const initialCommit = parseInitialCommit(execSync('git rev-list --max-parents=0 HEAD', { encoding: 'utf8' }));
-        matrix = await buildPushMatrix(environment, getAllApps(exclude), initialCommit, (envName) => getLastSuccessfulSha(octokit, owner, repo, envName), (baseSha) => getAffectedApps(baseSha, exclude), (msg) => info(msg));
+    catch (error) {
+        if (error instanceof Error)
+            setFailed(error.message);
     }
-    const json = JSON.stringify(matrix);
-    info(`Matrix: ${json}`);
-    setOutput('matrix', json);
-    setOutput('has-apps', matrix.length > 0 ? 'true' : 'false');
-    setOutput('environment', environment);
 }
 
 /* istanbul ignore next */
-run().catch((e) => setFailed(e.message));
+run();
 //# sourceMappingURL=index.js.map

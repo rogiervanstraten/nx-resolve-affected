@@ -1,13 +1,30 @@
 # nx-resolve-affected
 
-GitHub Action that builds an NX deploy matrix for an apps monorepo.
+GitHub Action that builds an NX deploy matrix for a monorepo, with a separate
+base SHA per app.
 
-- **On `push`**: for each app, queries the GitHub Deployments API to find the
-  last successful deployment SHA for that app's environment, then runs
-  `nx show projects --affected` against that SHA to decide whether the app needs
-  redeploying. Each app gets its **own** base SHA.
-- **On `workflow_dispatch`**: skips affected resolution and returns the explicit
-  list of apps passed in, tagged with the caller-supplied environment.
+In a multi-app monorepo, _what changed_ depends on which app you ask. App A
+deployed this morning; App B hasn't shipped in a month. A single base SHA is
+wrong for at least one of them. This action asks GitHub Deployments for each
+app's last successful deploy SHA and runs `nx show projects --affected` against
+_that_ SHA per app — so the matrix only contains apps that genuinely need
+redeploying.
+
+## How it works
+
+- **On `push`**: environment is inferred from the ref (`main` → `staging`, else
+  → `production`). For each app, the action picks a base SHA (see below) and
+  includes it in the matrix only if `nx show projects --affected` against that
+  base reports it as affected.
+- **On `workflow_dispatch`**: the caller passes an explicit `environment` and
+  `apps`. Affected resolution is skipped; listed apps go into the matrix with an
+  empty `base_sha` (caller deploys `HEAD`).
+
+### Base SHA per app (push only)
+
+The action queries the `<environment>/<short-name>` Deployments environment for
+the most recent `SUCCESS` deployment and uses that commit as the base. With no
+prior deploy, it falls back to the repo's initial commit.
 
 ## Usage
 
@@ -17,8 +34,6 @@ GitHub Action that builds an NX deploy matrix for an apps monorepo.
   uses: rogiervanstraten/nx-resolve-affected@v1
   with:
     github-token: ${{ secrets.GITHUB_TOKEN }}
-    event-name: ${{ github.event_name }}
-    ref-name: ${{ github.ref_name }}
     # workflow_dispatch only:
     environment: ${{ inputs.environment }}
     apps: ${{ inputs.apps }}
@@ -37,14 +52,14 @@ GitHub Action that builds an NX deploy matrix for an apps monorepo.
 
 ## Inputs
 
-| Input          | Required | Description                                                                          |
-| -------------- | -------- | ------------------------------------------------------------------------------------ |
-| `github-token` | yes      | Token with `deployments:read` and `contents:read` permissions                        |
-| `event-name`   | yes      | `github.event_name` — drives the push vs workflow_dispatch branch                    |
-| `ref-name`     | yes      | `github.ref_name` — on push, `main` maps to `staging`, anything else to `production` |
-| `environment`  | no       | Explicit environment for `workflow_dispatch` (e.g. `staging`, `production`)          |
-| `apps`         | no       | Comma-separated app short names for `workflow_dispatch`                              |
-| `exclude`      | no       | Comma-separated NX project names to exclude from affected resolution                 |
+| Input          | Required | Description                                                                      |
+| -------------- | -------- | -------------------------------------------------------------------------------- |
+| `github-token` | yes      | Token with `deployments:read` and `contents:read` permissions                    |
+| `environment`  | no       | Explicit environment for `workflow_dispatch` (e.g. `staging`, `production`)      |
+| `apps`         | no       | Comma-separated app short names for `workflow_dispatch`                          |
+| `exclude`      | no       | Comma-separated NX project names to omit from the matrix (applies to both flows) |
+| `event-name`   | no       | Override for `github.event_name`. Defaults to the runtime context.               |
+| `ref-name`     | no       | Override for `github.ref_name`. Defaults to `GITHUB_REF_NAME`.                   |
 
 ## Outputs
 
@@ -63,28 +78,13 @@ GitHub Action that builds an NX deploy matrix for an apps monorepo.
 ]
 ```
 
-On `workflow_dispatch`, `base_sha` is an empty string — callers are expected to
-deploy the current `HEAD` unconditionally in that flow.
-
-## How the base SHA is chosen (per app)
-
-For each app the action looks up the most recent deployment in the
-`<environment>/<short-name>` GitHub Deployments environment and uses the SHA of
-the last one whose `latestStatus.state == SUCCESS`. If no successful deployment
-exists, it falls back to the repo's initial commit so the app is always
-considered affected on its first deploy.
-
-An app is included in the matrix only if `nx show projects --affected` against
-that base SHA reports it as affected.
-
 ## Requirements
 
-- NX monorepo with app projects under `apps/` and a `project.json` per app whose
-  `name` is the full NX project name (e.g. `@acme/web`).
-- `pnpm` and `nx` available on the runner.
-- Deployment environments named `<environment>/<short-app-name>` (e.g.
-  `staging/web`) — this is how the action correlates apps to their deployment
-  history.
+- NX monorepo with apps under `apps/`, each with a `project.json` whose `name`
+  is the full NX project name (e.g. `@acme/web`).
+- `pnpm` and `nx` on the runner.
+- GitHub Deployments environments named `<environment>/<short-app-name>` (e.g.
+  `staging/web`).
 
 ## Development
 
