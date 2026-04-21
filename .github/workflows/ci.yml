@@ -1,0 +1,90 @@
+name: Continuous Integration
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test-typescript:
+    name: TypeScript Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        id: setup-node
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Install Dependencies
+        id: npm-ci
+        run: npm ci
+
+      - name: Check Format
+        id: npm-format-check
+        run: npm run format:check
+
+      - name: Lint
+        id: npm-lint
+        run: npm run lint
+
+      - name: Test
+        id: npm-ci-test
+        run: npm test
+
+  test-action:
+    name: GitHub Actions Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Create test files
+        run: |
+          mkdir -p modules/vpc services/api/production
+          echo 'resource "aws_vpc" "main" {}' > modules/vpc/main.tf
+          echo 'module "vpc" { source = "../../modules/vpc" }' > services/api/production/main.tf
+
+      - name: Test Local Action
+        id: test-action
+        uses: ./
+        with:
+          changed-files: |
+            modules/vpc/main.tf
+            services/api/production/main.tf
+
+      - name: Print Output
+        id: output
+        env:
+          DIRS: ${{ steps.test-action.outputs.changed-directories }}
+        run: |
+          echo "Changed directories: $DIRS"
+
+      - name: Verify Output
+        env:
+          OUTPUT: ${{ steps.test-action.outputs.changed-directories }}
+        run: |
+          echo "Output: $OUTPUT"
+          if [ -z "$OUTPUT" ]; then
+            echo "Error: No output received"
+            exit 1
+          fi
