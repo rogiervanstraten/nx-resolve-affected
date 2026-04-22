@@ -1,7 +1,7 @@
 {
   "name": "nx-resolve-affected",
   "description": "GitHub Action that resolves the NX affected deploy matrix per app using GitHub Deployments as the base SHA source",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "author": "Rogier van Straten <rogier@from89.com>",
   "type": "module",
   "private": true,
@@ -36,7 +36,7 @@
     "format:check": "npx prettier --check .",
     "lint": "npx eslint .",
     "local-action": "npx @github/local-action . src/main.ts .env",
-    "package": "npx rollup --config rollup.config.ts --configPlugin @rollup/plugin-typescript",
+    "package": "npx ncc build src/index.ts -o dist --source-map --license licenses.txt",
     "package:watch": "npm run package -- --watch",
     "all": "npm run format:write && npm run lint && npm run test && npm run package"
   },
@@ -48,12 +48,10 @@
   "devDependencies": {
     "@eslint/compat": "^2.0.5",
     "@github/local-action": "^7.0.1",
-    "@rollup/plugin-commonjs": "^29.0.2",
-    "@rollup/plugin-node-resolve": "^16.0.3",
-    "@rollup/plugin-typescript": "^12.3.0",
     "@types/node": "^25.6.0",
     "@typescript-eslint/eslint-plugin": "^8.58.2",
     "@typescript-eslint/parser": "^8.58.1",
+    "@vercel/ncc": "^0.38.3",
     "@vitest/coverage-v8": "^4.1.4",
     "@vitest/ui": "^4.1.4",
     "eslint": "^9.39.4",
@@ -64,12 +62,8 @@
     "make-coverage-badge": "^1.2.0",
     "prettier": "^3.8.3",
     "prettier-eslint": "^16.3.0",
-    "rollup": "^4.60.2",
     "typescript": "^5.9.3",
     "vitest": "^4.1.4"
-  },
-  "optionalDependencies": {
-    "@rollup/rollup-linux-x64-gnu": "*"
   },
   "overrides": {
     "@octokit/plugin-paginate-rest": "^11.3.6",
