@@ -5,8 +5,7 @@ import {
   resolveShortNames,
   DeployMatrixService
 } from '../src/services/deploy-matrix.service.js'
-import type { DeploymentsPort } from '../src/ports/deployments.port.js'
-import type { NxPort } from '../src/ports/nx.port.js'
+import { FakeDeployments, FakeNx } from './fakes.js'
 
 vi.mock('fs')
 
@@ -108,163 +107,175 @@ describe('resolveShortNames', () => {
 describe('DeployMatrixService.buildPushMatrix', () => {
   const noOp = (): void => {}
 
-  function makeService(
-    deployments: Partial<DeploymentsPort>,
-    nx: Partial<NxPort>
-  ): DeployMatrixService {
-    return new DeployMatrixService(deployments as DeploymentsPort, nx as NxPort)
-  }
-
   it('includes an affected app with its resolved base SHA', async () => {
-    const getLastSuccessfulSha = vi.fn().mockResolvedValue('abc123')
-    const getAffectedApps = vi.fn().mockReturnValue(['@acme/web'])
+    const deployments = new FakeDeployments()
+    deployments.record('staging/web', 'abc123')
+    const nx = new FakeNx()
+    nx.setApps(['@acme/web'])
+    nx.setAffected('abc123', ['@acme/web'])
 
-    const service = makeService(
-      { getLastSuccessfulSha },
-      {
-        getAllApps: () => ['@acme/web'],
-        getAffectedApps,
-        getInitialCommit: () => 'initial'
-      }
-    )
-
-    const result = await service.buildPushMatrix('staging', [], noOp)
+    const result = await new DeployMatrixService(
+      deployments,
+      nx
+    ).buildPushMatrix('staging', [], noOp)
 
     expect(result).toEqual([
       { app: '@acme/web', environment: 'staging', base_sha: 'abc123' }
     ])
-    expect(getLastSuccessfulSha).toHaveBeenCalledWith('staging/web')
-    expect(getAffectedApps).toHaveBeenCalledWith('abc123', [])
   })
 
   it('falls back to the initial commit when no prior deployment exists', async () => {
-    const getAffectedApps = vi.fn().mockReturnValue(['@acme/web'])
+    const nx = new FakeNx()
+    nx.setApps(['@acme/web'])
+    nx.setInitialCommit('initial-sha')
+    nx.setAffected('initial-sha', ['@acme/web'])
 
-    const service = makeService(
-      { getLastSuccessfulSha: vi.fn().mockResolvedValue(null) },
-      {
-        getAllApps: () => ['@acme/web'],
-        getAffectedApps,
-        getInitialCommit: () => 'initial-sha'
-      }
-    )
+    const result = await new DeployMatrixService(
+      new FakeDeployments(),
+      nx
+    ).buildPushMatrix('staging', [], noOp)
 
-    const result = await service.buildPushMatrix('staging', [], noOp)
-
-    expect(result[0].base_sha).toBe('initial-sha')
-    expect(getAffectedApps).toHaveBeenCalledWith('initial-sha', [])
+    expect(result).toEqual([
+      { app: '@acme/web', environment: 'staging', base_sha: 'initial-sha' }
+    ])
   })
 
   it('excludes an unaffected app', async () => {
-    const service = makeService(
-      { getLastSuccessfulSha: vi.fn().mockResolvedValue('abc123') },
-      {
-        getAllApps: () => ['@acme/web'],
-        getAffectedApps: () => [],
-        getInitialCommit: () => 'initial'
-      }
-    )
+    const deployments = new FakeDeployments()
+    deployments.record('staging/web', 'abc123')
+    const nx = new FakeNx()
+    nx.setApps(['@acme/web'])
 
-    const result = await service.buildPushMatrix('staging', [], noOp)
+    const result = await new DeployMatrixService(
+      deployments,
+      nx
+    ).buildPushMatrix('staging', [], noOp)
 
     expect(result).toEqual([])
   })
 
   it('handles multiple apps independently', async () => {
-    const getLastSuccessfulSha = vi
-      .fn()
-      .mockResolvedValueOnce('sha-web')
-      .mockResolvedValueOnce(null)
-    const getAffectedApps = vi
-      .fn()
-      .mockReturnValueOnce(['@acme/web'])
-      .mockReturnValueOnce(['@acme/api'])
+    const deployments = new FakeDeployments()
+    deployments.record('staging/web', 'sha-web')
+    const nx = new FakeNx()
+    nx.setApps(['@acme/web', '@acme/api'])
+    nx.setAffected('sha-web', ['@acme/web'])
+    nx.setAffected('initial', ['@acme/api'])
 
-    const service = makeService(
-      { getLastSuccessfulSha },
-      {
-        getAllApps: () => ['@acme/web', '@acme/api'],
-        getAffectedApps,
-        getInitialCommit: () => 'initial'
-      }
-    )
+    const result = await new DeployMatrixService(
+      deployments,
+      nx
+    ).buildPushMatrix('staging', [], noOp)
 
-    const result = await service.buildPushMatrix('staging', [], noOp)
-
-    expect(result).toHaveLength(2)
-    expect(result[0]).toMatchObject({
-      app: '@acme/web',
-      base_sha: 'sha-web'
-    })
-    expect(result[1]).toMatchObject({
-      app: '@acme/api',
-      base_sha: 'initial'
-    })
+    expect(result).toEqual([
+      { app: '@acme/web', environment: 'staging', base_sha: 'sha-web' },
+      { app: '@acme/api', environment: 'staging', base_sha: 'initial' }
+    ])
   })
 
   it('logs the resolved base SHA on the success path', async () => {
+    const deployments = new FakeDeployments()
+    deployments.record('staging/web', 'abc123')
+    const nx = new FakeNx()
+    nx.setApps(['@acme/web'])
+    nx.setAffected('abc123', ['@acme/web'])
     const onInfo = vi.fn()
 
-    const service = makeService(
-      { getLastSuccessfulSha: vi.fn().mockResolvedValue('abc123') },
-      {
-        getAllApps: () => ['@acme/web'],
-        getAffectedApps: () => ['@acme/web'],
-        getInitialCommit: () => 'initial'
-      }
+    await new DeployMatrixService(deployments, nx).buildPushMatrix(
+      'staging',
+      [],
+      onInfo
     )
-
-    await service.buildPushMatrix('staging', [], onInfo)
 
     expect(onInfo).toHaveBeenCalledWith('Base SHA for staging/web: abc123')
   })
 
   it('returns an empty matrix when there are no apps', async () => {
-    const service = makeService(
-      { getLastSuccessfulSha: vi.fn() },
-      {
-        getAllApps: () => [],
-        getAffectedApps: () => [],
-        getInitialCommit: () => 'initial'
-      }
-    )
+    const result = await new DeployMatrixService(
+      new FakeDeployments(),
+      new FakeNx()
+    ).buildPushMatrix('staging', [], noOp)
 
-    expect(await service.buildPushMatrix('staging', [], noOp)).toEqual([])
+    expect(result).toEqual([])
   })
 
   it('logs a message when falling back to the initial commit', async () => {
+    const nx = new FakeNx()
+    nx.setApps(['@acme/web'])
     const onInfo = vi.fn()
 
-    const service = makeService(
-      { getLastSuccessfulSha: vi.fn().mockResolvedValue(null) },
-      {
-        getAllApps: () => ['@acme/web'],
-        getAffectedApps: () => [],
-        getInitialCommit: () => 'initial'
-      }
+    await new DeployMatrixService(new FakeDeployments(), nx).buildPushMatrix(
+      'staging',
+      [],
+      onInfo
     )
-
-    await service.buildPushMatrix('staging', [], onInfo)
 
     expect(onInfo).toHaveBeenCalledWith(expect.stringContaining('staging/web'))
   })
 
-  it('propagates the exclude list to NX queries', async () => {
-    const getAllApps = vi.fn().mockReturnValue(['@acme/web'])
-    const getAffectedApps = vi.fn().mockReturnValue(['@acme/web'])
+  it('picks the latest deploy on the matching ref and ignores other refs', async () => {
+    const deployments = new FakeDeployments()
+    deployments.record('staging/web', 'feature-sha', { ref: 'feature/x' })
+    deployments.record('staging/web', 'main-sha', { ref: 'main' })
+    const nx = new FakeNx()
+    nx.setApps(['@acme/web'])
+    nx.setAffected('main-sha', ['@acme/web'])
 
-    const service = makeService(
-      { getLastSuccessfulSha: vi.fn().mockResolvedValue('abc123') },
-      {
-        getAllApps,
-        getAffectedApps,
-        getInitialCommit: () => 'initial'
-      }
-    )
+    const result = await new DeployMatrixService(
+      deployments,
+      nx
+    ).buildPushMatrix('staging', [], noOp, 'main')
 
-    await service.buildPushMatrix('staging', ['@acme/legacy'], noOp)
+    expect(result[0].base_sha).toBe('main-sha')
+  })
 
-    expect(getAllApps).toHaveBeenCalledWith(['@acme/legacy'])
-    expect(getAffectedApps).toHaveBeenCalledWith('abc123', ['@acme/legacy'])
+  it('falls back to initial commit when no deploy matches the ref', async () => {
+    const deployments = new FakeDeployments()
+    deployments.record('staging/web', 'feature-sha', { ref: 'feature/x' })
+    const nx = new FakeNx()
+    nx.setApps(['@acme/web'])
+    nx.setInitialCommit('init')
+    nx.setAffected('init', ['@acme/web'])
+
+    const result = await new DeployMatrixService(
+      deployments,
+      nx
+    ).buildPushMatrix('staging', [], noOp, 'main')
+
+    expect(result[0].base_sha).toBe('init')
+  })
+
+  it('accepts a deploy from any ref when no ref filter is provided', async () => {
+    const deployments = new FakeDeployments()
+    deployments.record('staging/web', 'any-sha', { ref: 'feature/x' })
+    const nx = new FakeNx()
+    nx.setApps(['@acme/web'])
+    nx.setAffected('any-sha', ['@acme/web'])
+
+    const result = await new DeployMatrixService(
+      deployments,
+      nx
+    ).buildPushMatrix('staging', [], noOp)
+
+    expect(result[0].base_sha).toBe('any-sha')
+  })
+
+  it('drops excluded apps from the matrix', async () => {
+    const deployments = new FakeDeployments()
+    deployments.record('staging/web', 'abc123')
+    deployments.record('staging/legacy', 'def456')
+    const nx = new FakeNx()
+    nx.setApps(['@acme/web', '@acme/legacy'])
+    nx.setAffected('abc123', ['@acme/web'])
+    nx.setAffected('def456', ['@acme/legacy'])
+
+    const result = await new DeployMatrixService(
+      deployments,
+      nx
+    ).buildPushMatrix('staging', ['@acme/legacy'], noOp)
+
+    expect(result).toEqual([
+      { app: '@acme/web', environment: 'staging', base_sha: 'abc123' }
+    ])
   })
 })

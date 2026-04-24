@@ -45269,24 +45269,26 @@ class GithubDeploymentsAdapter {
         this.owner = owner;
         this.repo = repo;
     }
-    async getLastSuccessfulSha(envName) {
+    async getLastSuccessfulSha(envName, ref) {
         const result = await this.octokit.graphql(`
       query($owner: String!, $name: String!, $env: String!) {
         repository(owner: $owner, name: $name) {
           deployments(
             environments: [$env]
-            first: 10
+            first: 100
             orderBy: { field: CREATED_AT, direction: DESC }
           ) {
             nodes {
               commitOid
+              ref { name }
               latestStatus { state }
             }
           }
         }
       }
     `, { owner: this.owner, name: this.repo, env: envName });
-        const node = result.repository.deployments.nodes.find((n) => n.latestStatus?.state === 'SUCCESS');
+        const node = result.repository.deployments.nodes.find((n) => n.latestStatus?.state === 'SUCCESS' &&
+            (ref === undefined || n.ref?.name === ref));
         return node?.commitOid ?? null;
     }
 }
@@ -45365,16 +45367,17 @@ class DeployMatrixService {
      * included. When no prior deployment exists, falls back to the repo's
      * initial commit.
      */
-    async buildPushMatrix(environment, exclude, onInfo) {
+    async buildPushMatrix(environment, exclude, onInfo, ref) {
         const allApps = this.nx.getAllApps(exclude);
         const initialCommit = this.nx.getInitialCommit();
         const matrix = [];
         for (const app of allApps) {
             const short = app.replace(/^@[^/]+\//, '');
             const envName = `${environment}/${short}`;
-            let baseSha = await this.deployments.getLastSuccessfulSha(envName);
+            let baseSha = await this.deployments.getLastSuccessfulSha(envName, ref);
             if (!baseSha) {
-                onInfo(`No successful deployment for ${envName}, using initial commit`);
+                const suffix = ref ? ` on ref ${ref}` : '';
+                onInfo(`No successful deployment for ${envName}${suffix}, using initial commit`);
                 baseSha = initialCommit;
             }
             else {
@@ -45415,11 +45418,11 @@ function buildDispatchMatrix(environment, apps, exclude, appsDir = external_path
     const resolved = resolveShortNames(apps, appsDir).filter((app) => !exclude.includes(app));
     return resolved.map((app) => ({ app, environment, base_sha: '' }));
 }
-async function buildPushMatrix(environment, exclude, token) {
+async function buildPushMatrix(environment, exclude, token, ref) {
     const octokit = github.getOctokit(token);
     const { owner, repo } = github.context.repo;
     const service = new DeployMatrixService(new GithubDeploymentsAdapter(octokit, owner, repo), new NxCliAdapter());
-    return service.buildPushMatrix(environment, exclude, (msg) => info(msg));
+    return service.buildPushMatrix(environment, exclude, (msg) => info(msg), ref || undefined);
 }
 async function run() {
     try {
@@ -45427,7 +45430,7 @@ async function run() {
         const environment = computeEnvironment(inputs.eventName, inputs.refName, inputs.environment);
         const matrix = inputs.eventName === 'workflow_dispatch'
             ? buildDispatchMatrix(environment, inputs.apps, inputs.exclude)
-            : await buildPushMatrix(environment, inputs.exclude, inputs.token);
+            : await buildPushMatrix(environment, inputs.exclude, inputs.token, inputs.refName);
         const json = JSON.stringify(matrix);
         info(`Matrix: ${json}`);
         setOutput('matrix', json);

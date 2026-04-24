@@ -23,8 +23,11 @@ redeploying.
 ### Base SHA per app (push only)
 
 The action queries the `<environment>/<short-name>` Deployments environment for
-the most recent `SUCCESS` deployment and uses that commit as the base. With no
-prior deploy, it falls back to the repo's initial commit.
+the most recent `SUCCESS` deployment **on the current ref** and uses that commit
+as the base. Deployments from other refs (e.g. a feature-branch
+`workflow_dispatch`) are ignored, so a push to `main` never bases its diff on a
+feature-branch deploy. With no prior deploy on the current ref, it falls back to
+the repo's initial commit.
 
 ## Usage
 

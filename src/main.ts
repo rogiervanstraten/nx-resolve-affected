@@ -53,7 +53,8 @@ export function buildDispatchMatrix(
 async function buildPushMatrix(
   environment: string,
   exclude: string[],
-  token: string
+  token: string,
+  ref: string
 ): Promise<MatrixEntry[]> {
   const octokit = github.getOctokit(token)
   const { owner, repo } = github.context.repo
@@ -61,7 +62,12 @@ async function buildPushMatrix(
     new GithubDeploymentsAdapter(octokit, owner, repo),
     new NxCliAdapter()
   )
-  return service.buildPushMatrix(environment, exclude, (msg) => core.info(msg))
+  return service.buildPushMatrix(
+    environment,
+    exclude,
+    (msg) => core.info(msg),
+    ref || undefined
+  )
 }
 
 export async function run(): Promise<void> {
@@ -76,7 +82,12 @@ export async function run(): Promise<void> {
     const matrix =
       inputs.eventName === 'workflow_dispatch'
         ? buildDispatchMatrix(environment, inputs.apps, inputs.exclude)
-        : await buildPushMatrix(environment, inputs.exclude, inputs.token)
+        : await buildPushMatrix(
+            environment,
+            inputs.exclude,
+            inputs.token,
+            inputs.refName
+          )
 
     const json = JSON.stringify(matrix)
     core.info(`Matrix: ${json}`)

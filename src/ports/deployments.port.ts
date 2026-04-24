@@ -1,3 +1,3 @@
 export interface DeploymentsPort {
-  getLastSuccessfulSha(envName: string): Promise<string | null>
+  getLastSuccessfulSha(envName: string, ref?: string): Promise<string | null>
 }

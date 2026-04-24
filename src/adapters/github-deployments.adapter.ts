@@ -6,6 +6,7 @@ interface DeploymentQueryResult {
     deployments: {
       nodes: Array<{
         commitOid: string
+        ref: { name: string } | null
         latestStatus: { state: string } | null
       }>
     }
@@ -19,18 +20,22 @@ export class GithubDeploymentsAdapter implements DeploymentsPort {
     private readonly repo: string
   ) {}
 
-  async getLastSuccessfulSha(envName: string): Promise<string | null> {
+  async getLastSuccessfulSha(
+    envName: string,
+    ref?: string
+  ): Promise<string | null> {
     const result = await this.octokit.graphql<DeploymentQueryResult>(
       `
       query($owner: String!, $name: String!, $env: String!) {
         repository(owner: $owner, name: $name) {
           deployments(
             environments: [$env]
-            first: 10
+            first: 100
             orderBy: { field: CREATED_AT, direction: DESC }
           ) {
             nodes {
               commitOid
+              ref { name }
               latestStatus { state }
             }
           }
@@ -41,7 +46,9 @@ export class GithubDeploymentsAdapter implements DeploymentsPort {
     )
 
     const node = result.repository.deployments.nodes.find(
-      (n) => n.latestStatus?.state === 'SUCCESS'
+      (n) =>
+        n.latestStatus?.state === 'SUCCESS' &&
+        (ref === undefined || n.ref?.name === ref)
     )
 
     return node?.commitOid ?? null

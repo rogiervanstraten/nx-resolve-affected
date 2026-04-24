@@ -66,7 +66,8 @@ export class DeployMatrixService {
   async buildPushMatrix(
     environment: string,
     exclude: string[],
-    onInfo: (msg: string) => void
+    onInfo: (msg: string) => void,
+    ref?: string
   ): Promise<MatrixEntry[]> {
     const allApps = this.nx.getAllApps(exclude)
     const initialCommit = this.nx.getInitialCommit()
@@ -76,9 +77,12 @@ export class DeployMatrixService {
       const short = app.replace(/^@[^/]+\//, '')
       const envName = `${environment}/${short}`
 
-      let baseSha = await this.deployments.getLastSuccessfulSha(envName)
+      let baseSha = await this.deployments.getLastSuccessfulSha(envName, ref)
       if (!baseSha) {
-        onInfo(`No successful deployment for ${envName}, using initial commit`)
+        const suffix = ref ? ` on ref ${ref}` : ''
+        onInfo(
+          `No successful deployment for ${envName}${suffix}, using initial commit`
+        )
         baseSha = initialCommit
       } else {
         onInfo(`Base SHA for ${envName}: ${baseSha}`)
