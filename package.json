@@ -1,7 +1,7 @@
 {
   "name": "nx-resolve-affected",
   "description": "GitHub Action that resolves the NX affected deploy matrix per app using GitHub Deployments as the base SHA source",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "author": "Rogier van Straten <rogier@from89.com>",
   "type": "module",
   "private": true,
