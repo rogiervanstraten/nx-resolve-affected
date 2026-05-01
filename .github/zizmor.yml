@@ -5,4 +5,4 @@ rules:
       # `git push` on workflow_dispatch, which requires persisted credentials.
       # No artifact uploads occur in this workflow, so the credential-leak
       # vector artipacked protects against does not apply.
-      - licensed.yml
+      - workflow: .github/workflows/licensed.yml
